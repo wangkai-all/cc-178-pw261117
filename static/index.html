@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>增量汇总 · 区域销售</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232a78d6'/%3E%3Crect x='6' y='17' width='5' height='9' rx='2' fill='%23fff'/%3E%3Crect x='14' y='11' width='5' height='15' rx='2' fill='%23fff'/%3E%3Crect x='22' y='6' width='5' height='20' rx='2' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="masthead">
+  <div class="masthead-main">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <h1>增量汇总 · 区域销售</h1>
+        <p class="subtitle">源表 → 增量批次 → 区域汇总，批次与结果同事务提交</p>
+      </div>
+    </div>
+    <div class="masthead-meta">
+      <span class="pill" id="pill-snapshot">快照 —</span>
+      <span class="pill" id="pill-store">持久化 —</span>
+      <button class="btn ghost small" id="theme-toggle" type="button" aria-label="切换明暗主题">深色</button>
+    </div>
+  </div>
+  <nav class="tabs" aria-label="页面分区">
+    <button class="tab active" data-tab="summary" type="button">汇总</button>
+    <button class="tab" data-tab="source" type="button">源表</button>
+    <button class="tab" data-tab="batches" type="button">批次与场景</button>
+    <button class="tab" data-tab="impact" type="button">变更影响</button>
+    <button class="tab" data-tab="audit" type="button">对照与审计</button>
+  </nav>
+</header>
+
+<main id="app">
+
+  <!-- ================= 汇总 ================= -->
+  <section class="panel" id="panel-summary" data-panel="summary">
+    <div class="section-head">
+      <div>
+        <h2>当前汇总</h2>
+        <p class="lead">由已提交的增量批次累积而来。每个分组同时给出订单数、非空金额笔数、空金额笔数、零金额笔数、金额合计与客单价。</p>
+      </div>
+      <div class="section-actions">
+        <label class="switch"><input type="checkbox" id="summary-compare-toggle"><span>显示按同一快照完整重算的数值</span></label>
+      </div>
+    </div>
+
+    <div id="summary-banner"></div>
+
+    <div class="stat-row" id="summary-stats"></div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h3>区域状态</h3>
+          <p class="card-note">「无分组」表示该区域已没有任何销售；「合计为零」表示区域仍有销售，但非空金额合计为 0.00。两者不能混同。</p>
+        </div>
+      </div>
+      <div class="zone-states" id="zone-states"></div>
+    </div>
+
+    <div class="split">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h3>各区域金额合计</h3>
+            <p class="card-note">只画金额合计一个量；订单数与客单价在右侧表格与悬浮提示中。</p>
+          </div>
+          <button class="btn ghost small" id="chart-view-toggle" type="button">表格视图</button>
+        </div>
+        <div id="chart-wrap" class="chart-wrap"></div>
+        <div id="chart-table" class="chart-table" hidden></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h3>分组明细</h3>
+            <p class="card-note">客单价 = 金额合计 ÷ 非空金额笔数；没有非空金额时为「未定义」，不是 0。</p>
+          </div>
+        </div>
+        <div class="table-wrap" id="summary-table"></div>
+      </div>
+    </div>
+
+    <div class="footnote" id="summary-footnote"></div>
+  </section>
+
+  <!-- ================= 源表 ================= -->
+  <section class="panel" data-panel="source" hidden>
+    <div class="section-head">
+      <div>
+        <h2>源表</h2>
+        <p class="lead">销售与门店都是虚构样例，可直接在本页修改。改动先进入「待提交变更」，提交后才进入增量批次，汇总不会因编辑而提前变动。</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h3>新增销售</h3>
+          <p class="card-note">金额留空表示空值；填 0 表示一笔金额为零的真实销售。门店可以选未分配区域的门店或留空，它们会进入「未匹配」分组。</p>
+        </div>
+      </div>
+      <form class="inline-form" id="new-sale-form">
+        <label>主键 <input name="sale_id" type="text" required placeholder="SO-9301" autocomplete="off"></label>
+        <label>门店
+          <select name="store_id" id="new-sale-store"></select>
+        </label>
+        <label>金额 <input name="amount" type="text" placeholder="留空=空值" autocomplete="off"></label>
+        <button class="btn primary" type="submit">加入待提交</button>
+        <span class="form-hint" id="new-sale-hint"></span>
+      </form>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h3>销售源表</h3>
+          <p class="card-note">修改金额或门店会生成一条 update 操作；删除会生成 delete 操作。提交时每条 update 都先撤回旧贡献，再加入新贡献。</p>
+        </div>
+        <div class="toolbar">
+          <label class="inline-check"><input type="checkbox" id="show-deleted" checked><span>显示已删除</span></label>
+          <input class="search" id="sale-search" type="search" placeholder="搜索销售 / 门店 / 区域">
+        </div>
+      </div>
+      <div class="table-wrap" id="sales-table"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h3>门店资料</h3>
+          <p class="card-note">改变门店区域会产生一次整店迁移：该店每条有效销售都会先撤回旧区域，再加入新区域。</p>
+        </div>
+      </div>
+      <div class="table-wrap" id="stores-table"></div>
+    </div>
+
+    <div class="card pending-card">
+      <div class="card-head">
+        <div>
+          <h3>待提交变更 <span class="count-badge" id="pending-count">0</span></h3>
+          <p class="card-note">这些操作还没有进入增量汇总。也可以到「批次与场景」标签页用 JSON 编辑器提交。</p>
+        </div>
+        <div class="toolbar">
+          <button class="btn ghost small" id="pending-clear" type="button">清空</button>
+          <button class="btn primary" id="pending-submit" type="button" disabled>提交批次</button>
+        </div>
+      </div>
+      <div class="pending-meta">
+        <label>批次名称 <input id="pending-label" type="text" value="页面编辑批次" autocomplete="off"></label>
+        <label class="inline-check"><input type="checkbox" id="pending-strict"><span>strict：任一条被拒收则整批不提交</span></label>
+      </div>
+      <div id="pending-list" class="pending-list"></div>
+    </div>
+  </section>
+
+  <!-- ================= 批次与场景 ================= -->
+  <section class="panel" data-panel="batches" hidden>
+    <div class="section-head">
+      <div>
+        <h2>批次与场景</h2>
+        <p class="lead">每个批次就是一个增量批次：它的操作明细、签名增量、结果汇总与全量对照一起提交。相同内容重复提交只会被识别为幂等重放，不会二次累计。</p>
+      </div>
+    </div>
+
+    <div class="scenario-grid" id="scenario-grid"></div>
+
+    <div class="split">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h3>批次编辑器</h3>
+            <p class="card-note">载入场景后可自由改写：改金额、改门店、增删操作、切换 strict、设置故障注入点。</p>
+          </div>
+        </div>
+        <form id="batch-form" class="editor-form">
+          <div class="editor-meta">
+            <label>批次名称 <input name="label" id="editor-label" type="text" value="手工批次" autocomplete="off"></label>
+            <label class="inline-check"><input type="checkbox" id="editor-strict"><span>strict</span></label>
+            <label>故障注入 <input name="fail_after" type="number" min="0" placeholder="不注入" autocomplete="off"></label>
+          </div>
+          <textarea id="editor-ops" spellcheck="false" aria-label="批次操作 JSON"></textarea>
+          <div class="editor-actions">
+            <button class="btn primary" type="submit">提交批次</button>
+            <button class="btn ghost" type="button" id="editor-format">格式化 JSON</button>
+            <span class="form-hint" id="editor-hint"></span>
+          </div>
+        </form>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h3>提交结果</h3>
+            <p class="card-note">提交后这里显示批次状态、被拒收的操作、逐区域撤回/加入/净值。</p>
+          </div>
+        </div>
+        <div id="submit-result" class="result-panel">
+          <p class="empty-state">还没有提交过批次。载入场景或编辑源表后提交，这里会给出结果。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h3>批次历史</h3>
+          <p class="card-note">点击「明细」查看该批次的操作与区域增量；点击「重放」用同一内容再次提交，验证不会重复累计。</p>
+        </div>
+      </div>
+      <div class="table-wrap" id="batch-history"></div>
+      <div id="batch-detail" class="batch-detail" hidden></div>
+    </div>
+  </section>
+
+  <!-- ================= 变更影响 ================= -->
+  <section class="panel" data-panel="impact" hidden>
+    <div class="section-head">
+      <div>
+        <h2>单条变更的影响</h2>
+        <p class="lead">选择某个批次里的某一条操作，查看它撤回与加入了哪些分组，以及该分组在这次变更前后的数值。</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h3>选择变更</h3>
+          <p class="card-note">只在已提交的批次里选择。operation 的索引从 0 开始。</p>
+        </div>
+        <div class="toolbar">
+          <select id="impact-batch" class="select"></select>
+          <select id="impact-op" class="select"></select>
+          <button class="btn primary small" type="button" id="impact-load">查看影响</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="impact-body"></div>
+  </section>
+
+  <!-- ================= 对照与审计 ================= -->
+  <section class="panel" data-panel="audit" hidden>
+    <div class="section-head">
+      <div>
+        <h2>对照与审计</h2>
+        <p class="lead">对某个快照，重新用该快照自己的源表数据完整重算一遍，与持久化的增量汇总逐区域、逐指标对照；同时保留失败与回滚的审计记录。</p>
+      </div>
+      <div class="section-actions">
+        <select id="audit-version" class="select"></select>
+        <button class="btn primary" type="button" id="audit-recompute">按同一快照完整重算</button>
+      </div>
+    </div>
+
+    <div id="audit-result"></div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h3>尝试记录</h3>
+          <p class="card-note">失败与被回滚的批次不会出现在批次历史里，但这里保留它们：失败在事务内发生，源表和汇总都没有被改动。</p>
+        </div>
+      </div>
+      <div class="table-wrap" id="attempts-table"></div>
+      <div class="danger-zone">
+        <div>
+          <strong>重置本地数据</strong>
+          <p>删除当前数据库并重新写入虚构样例。仅影响本机文件，不影响任何远程系统。</p>
+        </div>
+        <button class="btn danger" type="button" id="reset-data">重置为初始样例</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<script src="/app.js"></script>
+</body>
+</html>
